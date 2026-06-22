@@ -74,8 +74,25 @@
         .player-container iframe { display: block; }
         .player-loading { color: var(--text-secondary); font-weight: 500; }
         .player-error { color: var(--match-color); font-weight: 600; text-align: center; padding: 20px; }
-        
-        /* Мобильная адаптация */
+        .subtopic-block { margin-top: 12px; margin-left: 8px; padding: 10px 12px; background: #f8fafc; border-left: 3px solid var(--accent-mint); border-radius: 0 6px 6px 0; }
+        .subtopic-block h4 { font-size: 0.75rem !important; color: var(--text-secondary) !important; margin-bottom: 8px !important; border-bottom: 1px dashed var(--border-color) !important; }
+        .subtopic-block .checkbox-label { font-size: 0.85rem; padding-left: 4px; }
+        .expandable-item { display: flex; align-items: center; padding: 4px 0; }
+        .expandable-item .checkbox-label { flex: 1; margin-bottom: 0; }
+        .expandable-item .trigger { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-left: 8px; cursor: pointer; transition: transform 0.25s ease, background 0.2s ease; color: var(--accent-mint-hover); font-size: 0.75rem; border-radius: 4px; flex-shrink: 0; user-select: none; }
+        .expandable-item .trigger:hover { background: var(--accent-mint-light); }
+        .expandable-item .trigger.expanded { transform: rotate(90deg); }
+        .subtopic-container { display: none; margin-left: 24px; margin-top: 8px; padding: 8px 12px; background: #f8fafc; border-left: 2px solid var(--accent-mint); border-radius: 0 6px 6px 0; }
+        .subtopic-container.show { display: block; animation: slideDown 0.25s ease-out; }
+        .subtopic-container .checkbox-label { font-size: 0.85rem; }
+        .stats-container { background: var(--panel-bg); padding: 24px; border-radius: var(--radius); box-shadow: var(--shadow); border: 1px solid var(--border-color); display: none; }
+        .stats-table { width: 100%; border-collapse: separate; border-spacing: 0; background: var(--panel-bg); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); border: 1px solid var(--border-color); }
+        .stats-table th { background: var(--accent-mint-light); color: var(--text-primary); padding: 14px 20px; text-align: left; font-weight: 700; border-bottom: 2px solid var(--border-color); }
+        .stats-table td { padding: 12px 20px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+        .stats-table tr:last-child td { border-bottom: none; }
+        .stats-table tr:hover { background: #f9fafb; }
+        .stats-summary { margin-bottom: 20px; padding: 16px; background: var(--accent-mint-light); border-radius: 8px; font-weight: 600; color: var(--text-primary); }
+        .pos-tag { display: inline-block; background: #e0f2fe; color: #075985; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600; }
         @media (max-width: 700px) { 
             .site-header { padding: 60px 15px 20px; }
             .home-btn-mobile { position: absolute; top: 15px; left: 15px; z-index: 10; }
@@ -88,16 +105,10 @@
             .modal-content { padding: 16px; }
             .results-table th, .results-table td { padding: 10px 12px; font-size: 0.9rem; }
             .context-cell { font-size: 0.95rem; }
+            .stats-table th, .stats-table td { padding: 10px 12px; font-size: 0.9rem; }
         }
-        
-        @media (min-width: 701px) {
-            .home-btn-mobile { display: none; }
-            .home-btn-desktop { display: block; }
-        }
-        
-        @media (max-width: 700px) {
-            .home-btn-desktop { display: none; }
-        }
+        @media (min-width: 701px) { .home-btn-mobile { display: none; } .home-btn-desktop { display: block; } }
+        @media (max-width: 700px) { .home-btn-desktop { display: none; } }
     </style>
 </head>
 <body>
@@ -108,7 +119,7 @@
     <p class="header-subtitle">Поиск по корпусу песен</p>
 </header>
 <div class="container">
-    <div class="status-bar" id="statusBar">⏳ Загрузка данных...</div>
+    <div class="status-bar" id="statusBar"> Загрузка данных...</div>
     <div class="search-panel">
         <button class="album-toggle-btn" id="albumToggle"><span>💿 Альбом</span><span id="albumArrow">▼</span></button>
         <div class="album-options" id="albumPanel"><div class="album-grid" id="albumGrid"></div></div>
@@ -128,10 +139,12 @@
     <div class="view-controls" id="viewControls">
         <button class="view-btn active" onclick="switchView('kwic')">Контекст (KWIC)</button>
         <button class="view-btn" onclick="switchView('chart')">График</button>
+        <button class="view-btn" onclick="switchView('stats')">Статистика</button>
     </div>
     <div id="resultsArea">
         <div id="kwicView"></div>
         <div class="chart-container" id="chartView"><canvas id="albumChart"></canvas></div>
+        <div id="statsView"></div>
     </div>
 </div>
 <div class="modal-overlay" id="playerModal" onclick="closePlayerOnOverlay(event)">
@@ -146,6 +159,17 @@
 
 <script>
     let corpus = []; let albumsList = new Set(); let myChart = null; let songLinks = {};
+    
+    // Глагольные части речи, которые объединяются в одну группу при подсчёте леммы
+    const VERB_POS_GROUP = new Set(['PRTF', 'PRTS', 'VERB', 'INFN', 'GRND']);
+    
+    // Нормализация части речи: все глагольные формы -> 'VERB_GROUP', остальные -> как есть
+    function normalizePos(pos) {
+        const p = (pos || '').trim();
+        if (VERB_POS_GROUP.has(p)) return 'VERB_GROUP';
+        return p || '-';
+    }
+    
     const grammarColumns = [
         { index: 4, label: "Часть речи" }, { index: 5, label: "Род" }, { index: 6, label: "Число" },
         { index: 7, label: "Падеж" }, { index: 8, label: "Время" }, { index: 9, label: "Лицо" },
@@ -153,15 +177,14 @@
         { index: 15, label: "Одушевлённость" }, { index: 16, label: "Переходность" }
     ];
     const semanticColumns = [
-        { index: 17, label: "Таксономия имён собственных" },
-        { index: 18, label: "Таксономия предметных имён" },
-        { index: 19, label: "Подтема инструментов" },
-        { index: 20, label: "Таксономия прилагательных" }
+        { index: 17, label: "Таксономия имён собственных", field: 'properNounTaxon', subtopic: null },
+        { index: 18, label: "Таксономия предметных имён", field: 'taxonNoun', subtopic: { index: 19, label: "Подтема инструментов", field: 'toolSubtopic' } },
+        { index: 20, label: "Таксономия прилагательных (физические свойства)", field: 'taxonAdj', subtopic: null }
     ];
     const albumOrder = ["Здравствуйте, дети!, 2004", "Курара, 2006", "Механизмы, 2008", "Грясь, 2010", "Шикарная жизнь, 2012", "Архимед, 2014", "Пуля, 2016", "Кафка, 2019", "Брут, 2021", "ПП, 2023", "Эстеты, 2025"];
     const caseOrder = ["именительный", "родительный", "родительный (2)", "дательный", "винительный", "творительный", "предложный", "предложный (2)", "звательный"];
 
-    fetch('songi_new.csv').then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.text(); })
+    fetch('songi_s_taksonomiyami.csv').then(res => { if (!res.ok) throw new Error(`HTTP ${res.status}`); return res.text(); })
         .then(csv => { parseCSV(csv); updateStatus('✅ Корпус загружен: ' + corpus.length + ' словоформ', '#d1fae5', '#064a38'); })
         .catch(err => updateStatus('❌ Ошибка: ' + err.message, '#fee2e2', '#991b1b'));
 
@@ -176,9 +199,8 @@
         if (lines.length < 2) return;
         lines.slice(1).forEach((line, idx) => {
             const parts = line.split(';');
-            if (parts.length < 20) return;
+            if (parts.length < 21) return;
             const row = { 
-                // ИСПРАВЛЕНО: убираем кавычки у названий альбомов
                 album: parts[0].trim().replace(/^"|"$/g, ''), 
                 song: parts[1].trim(), 
                 word: parts[2].trim(), 
@@ -194,7 +216,6 @@
                 voice: parts[12].trim(), 
                 anim: parts[15].trim(), 
                 trans: parts[16].trim(),
-                // НОВЫЕ ПОЛЯ: таксономии
                 properNounTaxon: parts[17] ? parts[17].trim() : '',
                 taxonNoun: parts[18] ? parts[18].trim() : '',
                 toolSubtopic: parts[19] ? parts[19].trim() : '',
@@ -224,7 +245,7 @@
     function populateAlbumCheckboxes() {
         const grid = document.getElementById('albumGrid'); grid.innerHTML = '';
         const albumGroup = document.createElement('div'); albumGroup.className = 'album-group';
-        const h4 = document.createElement('h4'); h4.textContent = 'Выберите альбомы'; albumGroup.appendChild(h4);
+        const h4 = document.createElement('h4'); h4.textContent = 'Выберите альбом(ы)'; albumGroup.appendChild(h4);
         Array.from(albumsList).sort((a, b) => { const iA = albumOrder.indexOf(a), iB = albumOrder.indexOf(b); return (iA === -1 ? 999 : iA) - (iB === -1 ? 999 : iB); }).forEach(album => {
             const label = document.createElement('label'); label.className = 'checkbox-label';
             label.innerHTML = `<input type="checkbox" class="album-checkbox" value="${album}"> ${album}`;
@@ -257,22 +278,47 @@
             const h4 = document.createElement('h4'); h4.textContent = col.label; groupDiv.appendChild(h4);
             const values = new Set();
             corpus.forEach(r => {
-                const val = r[col.index === 17 ? 'properNounTaxon' : col.index === 18 ? 'taxonNoun' : col.index === 19 ? 'toolSubtopic' : col.index === 20 ? 'taxonAdj' : ''];
+                const val = r[col.field];
                 if (val && val !== '' && val !== '-') values.add(val);
             });
             const sortedVals = Array.from(values).sort();
             if (sortedVals.length === 0) { 
-                const span = document.createElement('span'); 
-                span.textContent = 'нет данных'; 
-                span.style.color = '#94a3b8'; 
-                groupDiv.appendChild(span); 
+                const span = document.createElement('span'); span.textContent = 'нет данных'; span.style.color = '#94a3b8'; groupDiv.appendChild(span); 
             } else {
-                sortedVals.forEach(val => { 
-                    const label = document.createElement('label'); 
-                    label.className = 'checkbox-label'; 
-                    label.innerHTML = `<input type="checkbox" name="${col.index}" value="${val}"> ${val}`; 
-                    groupDiv.appendChild(label); 
-                });
+                if (col.subtopic) {
+                    sortedVals.forEach(val => {
+                        if (val.toLowerCase() === 'инструменты' || val.toLowerCase() === 'инструмент') {
+                            const expandableDiv = document.createElement('div'); expandableDiv.className = 'expandable-item';
+                            const label = document.createElement('label'); label.className = 'checkbox-label';
+                            label.innerHTML = `<input type="checkbox" name="${col.index}" value="${val}"> ${val}`;
+                            const trigger = document.createElement('span'); trigger.className = 'trigger'; trigger.textContent = '▶'; trigger.title = 'Показать подкатегории';
+                            expandableDiv.appendChild(label); expandableDiv.appendChild(trigger); groupDiv.appendChild(expandableDiv);
+                            const subtopicContainer = document.createElement('div'); subtopicContainer.className = 'subtopic-container';
+                            const subValues = new Set();
+                            corpus.forEach(r => { const subVal = r[col.subtopic.field]; if (subVal && subVal !== '' && subVal !== '-') subValues.add(subVal); });
+                            const sortedSubVals = Array.from(subValues).sort();
+                            if (sortedSubVals.length === 0) { const span = document.createElement('span'); span.textContent = 'нет данных'; span.style.color = '#94a3b8'; subtopicContainer.appendChild(span); }
+                            else sortedSubVals.forEach(subVal => { const subLabel = document.createElement('label'); subLabel.className = 'checkbox-label'; subLabel.innerHTML = `<input type="checkbox" name="${col.subtopic.index}" value="${subVal}"> ${subVal}`; subtopicContainer.appendChild(subLabel); });
+                            groupDiv.appendChild(subtopicContainer);
+                            trigger.addEventListener('click', function(e) {
+                                e.stopPropagation();
+                                const isExpanded = this.classList.contains('expanded');
+                                if (isExpanded) { this.classList.remove('expanded'); subtopicContainer.classList.remove('show'); }
+                                else { this.classList.add('expanded'); subtopicContainer.classList.add('show'); }
+                            });
+                        } else {
+                            const label = document.createElement('label'); label.className = 'checkbox-label';
+                            label.innerHTML = `<input type="checkbox" name="${col.index}" value="${val}"> ${val}`;
+                            groupDiv.appendChild(label);
+                        }
+                    });
+                } else {
+                    sortedVals.forEach(val => { 
+                        const label = document.createElement('label'); label.className = 'checkbox-label'; 
+                        label.innerHTML = `<input type="checkbox" name="${col.index}" value="${val}"> ${val}`; 
+                        groupDiv.appendChild(label); 
+                    });
+                }
             }
             grid.appendChild(groupDiv);
         });
@@ -289,16 +335,28 @@
     document.getElementById('btnReset').addEventListener('click', () => {
         document.getElementById('f_word').value = ''; document.getElementById('f_lemma').value = '';
         document.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
-        document.getElementById('kwicView').innerHTML = ''; document.getElementById('chartView').style.display = 'none';
+        document.querySelectorAll('.subtopic-container').forEach(c => c.classList.remove('show'));
+        document.querySelectorAll('.trigger').forEach(t => t.classList.remove('expanded'));
+        document.getElementById('kwicView').innerHTML = ''; 
+        document.getElementById('chartView').style.display = 'none';
+        document.getElementById('statsView').innerHTML = '';
+        document.getElementById('statsView').style.display = 'none';
         document.getElementById('viewControls').style.display = 'none';
-        updateStatus('⏳ Загрузка данных...', '#f0fdf4', '#14532d'); document.getElementById('statusBar').style.display = 'block';
-        if (myChart) { myChart.destroy(); myChart = null; } closePlayer();
+        updateStatus('⏳ Загрузка данных...', '#f0fdf4', '#14532d'); 
+        document.getElementById('statusBar').style.display = 'block';
+        if (myChart) { myChart.destroy(); myChart = null; } 
+        closePlayer();
     });
     window.switchView = function(viewName) {
-        const kwic = document.getElementById('kwicView'), chart = document.getElementById('chartView'), btns = document.querySelectorAll('.view-btn');
+        const kwic = document.getElementById('kwicView');
+        const chart = document.getElementById('chartView');
+        const stats = document.getElementById('statsView');
+        const btns = document.querySelectorAll('.view-btn');
         btns.forEach(b => b.classList.remove('active'));
-        if (viewName === 'kwic') { kwic.style.display = 'block'; chart.style.display = 'none'; btns[0].classList.add('active'); }
-        else { kwic.style.display = 'none'; chart.style.display = 'block'; btns[1].classList.add('active'); }
+        kwic.style.display = 'none'; chart.style.display = 'none'; stats.style.display = 'none';
+        if (viewName === 'kwic') { kwic.style.display = 'block'; btns[0].classList.add('active'); }
+        else if (viewName === 'chart') { chart.style.display = 'block'; btns[1].classList.add('active'); }
+        else if (viewName === 'stats') { stats.style.display = 'block'; btns[2].classList.add('active'); }
     }
     function performSearch() {
         const f_lemma = document.getElementById('f_lemma').value.trim().toLowerCase(), f_word = document.getElementById('f_word').value.trim().toLowerCase();
@@ -332,7 +390,11 @@
             }
             return true;
         }).map(r => r.idx);
-        document.getElementById('viewControls').style.display = 'flex'; switchView('kwic'); renderKWIC(matches); renderAlbumChart(matches);
+        document.getElementById('viewControls').style.display = 'flex'; 
+        switchView('kwic'); 
+        renderKWIC(matches); 
+        renderAlbumChart(matches);
+        renderStats(matches);
     }
     function renderKWIC(indices) {
         const area = document.getElementById('kwicView'); area.innerHTML = '';
@@ -359,39 +421,118 @@
         const albumFrequency = {}; Object.keys(wordOccurrences).forEach(a => { albumFrequency[a] = (wordOccurrences[a] / (albumTotalForms[a] || 1)) * 100; });
         const sortedLabels = Object.keys(albumFrequency).sort((a, b) => { const iA = albumOrder.indexOf(a), iB = albumOrder.indexOf(b); return (iA === -1 ? 999 : iA) - (iB === -1 ? 999 : iB); });
         const dataValues = sortedLabels.map(l => albumFrequency[l]);
-        
         myChart = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: sortedLabels,
-                datasets: [{
-                    label: 'Частотность, %',
-                    data: dataValues,
-                    backgroundColor: 'rgba(52, 211, 153, 0.6)',
-                    borderColor: 'rgba(16, 185, 129, 1)',
-                    borderWidth: 1,
-                    borderRadius: 5
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: {
-                    legend: { display: false },
-                    title: { display: true, text: 'Относительная частотность по альбомам', font: { size: 16, weight: 'bold' }, color: '#14532d' },
-                    tooltip: { callbacks: { label: c => ` ${c.raw.toFixed(2)}%` } }
-                },
-                scales: {
-                    y: { beginAtZero: true, title: { display: true, text: '%' }, ticks: { callback: v => v + '%' } },
-                    x: { grid: { display: false } }
-                }
-            }
+            type: 'bar', data: { labels: sortedLabels, datasets: [{ label: 'Частотность, %', data: dataValues, backgroundColor: 'rgba(52, 211, 153, 0.6)', borderColor: 'rgba(16, 185, 129, 1)', borderWidth: 1, borderRadius: 5 }] },
+            options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false }, title: { display: true, text: 'Относительная частотность по альбомам', font: { size: 16, weight: 'bold' }, color: '#14532d' }, tooltip: { callbacks: { label: c => ` ${c.raw.toFixed(2)}%` } } }, scales: { y: { beginAtZero: true, title: { display: true, text: '%' }, ticks: { callback: v => v + '%' } }, x: { grid: { display: false } } } }
         });
+    }
+    function renderStats(indices) {
+        const statsView = document.getElementById('statsView');
+        statsView.innerHTML = '';
+        statsView.style.display = 'block';
+        if (indices.length === 0) { statsView.innerHTML = '<div class="empty-state">Нет данных для отображения статистики.</div>'; return; }
+        
+        const f_lemma = document.getElementById('f_lemma').value.trim().toLowerCase();
+        const f_word = document.getElementById('f_word').value.trim().toLowerCase();
+        const selectedAlbums = [];
+        document.querySelectorAll('.album-checkbox:checked').forEach(cb => selectedAlbums.push(cb.value));
+        
+        let totalWords = 0;
+        if (selectedAlbums.length > 0) corpus.forEach(r => { if (selectedAlbums.includes(r.album)) totalWords++; });
+        else totalWords = corpus.length;
+        
+        const container = document.createElement('div');
+        container.className = 'stats-container'; container.style.display = 'block';
+        
+        // Группировка по паре (лемма + нормализованная ЧР)
+        // Для глагольных форм (VERB, INFN, PRTF, PRTS, GRND) все они объединяются в одну группу VERB_GROUP
+        const lemmaPosMap = new Map();
+        function addEntry(lemmaDisplay, lemmaLower, pos, note) {
+            const normPos = normalizePos(pos);
+            const key = `${lemmaLower}|||${normPos}`;
+            if (!lemmaPosMap.has(key)) {
+                lemmaPosMap.set(key, { 
+                    display: lemmaDisplay, 
+                    lemmaLower: lemmaLower, 
+                    normPos: normPos, 
+                    actualPosSet: new Set(), // фактические ЧР, встречающиеся для этой группы
+                    note: note, 
+                    count: 0 
+                });
+            }
+        }
+        
+        if (f_lemma) {
+            const matchIdx = indices.find(i => corpus[i].lemma.toLowerCase() === f_lemma);
+            if (matchIdx !== undefined) addEntry(corpus[matchIdx].lemma, f_lemma, corpus[matchIdx].pos, '');
+        }
+        if (f_word) {
+            const found = corpus.find(r => r.word.toLowerCase() === f_word);
+            if (found && found.lemma) addEntry(found.lemma, found.lemma.toLowerCase(), found.pos, `(словоформа: ${f_word})`);
+        }
+        if (!f_lemma && !f_word) {
+            indices.forEach(idx => { const r = corpus[idx]; if (r.lemma) addEntry(r.lemma, r.lemma.toLowerCase(), r.pos, ''); });
+        }
+        
+        // Подсчёт словоупотреблений: для каждой группы (лемма + нормализованная ЧР)
+        // считаем все словоформы, у которых лемма совпадает и ЧР нормализуется в ту же группу
+        lemmaPosMap.forEach(data => {
+            corpus.forEach(r => {
+                if (selectedAlbums.length > 0 && !selectedAlbums.includes(r.album)) return;
+                if (r.lemma.toLowerCase() !== data.lemmaLower) return;
+                if (normalizePos(r.pos) !== data.normPos) return;
+                data.count++;
+                // Собираем фактические ЧР для отображения
+                if (r.pos && r.pos !== '-') data.actualPosSet.add(r.pos);
+            });
+        });
+        
+        const sortedEntries = Array.from(lemmaPosMap.values()).sort((a, b) => b.count - a.count);
+        const uniqueLemmasCount = sortedEntries.length;
+        
+        const summary = document.createElement('div'); summary.className = 'stats-summary';
+        summary.innerHTML = `
+            <div>Всего словоформ в корпусе${selectedAlbums.length > 0 ? ' (по выбранным альбомам)' : ''}: <strong>${totalWords.toLocaleString()}</strong></div>
+            <div>Найдено совпадений (словоформ): <strong>${indices.length.toLocaleString()}</strong></div>
+            <div>Количество уникальных лемм: <strong>${uniqueLemmasCount.toLocaleString()}</strong></div>
+        `;
+        container.appendChild(summary);
+        
+        const table = document.createElement('table'); table.className = 'stats-table';
+        table.innerHTML = `<thead><tr><th>Лемма</th><th>Вхождения</th><th>% от корпуса</th></tr></thead><tbody></tbody>`;
+        const tbody = table.querySelector('tbody');
+        
+        if (sortedEntries.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="3" style="text-align:center; color: var(--text-secondary);">Нет лемм для отображения</td></tr>`;
+        } else {
+            sortedEntries.forEach(data => {
+                const percentage = totalWords > 0 ? ((data.count / totalWords) * 100).toFixed(4) : 0;
+                const row = document.createElement('tr');
+                
+                // Формируем метку ЧР: для глагольной группы показываем все фактические ЧР
+                let posLabelHtml = '';
+                if (data.normPos === 'VERB_GROUP') {
+                    const actualPos = Array.from(data.actualPosSet).sort();
+                    if (actualPos.length > 0) {
+                        posLabelHtml = ` <span class="pos-tag" title="Глагольная группа: все формы VERB, INFN, PRTF, PRTS, GRND объединены">глагол: ${actualPos.join(', ')}</span>`;
+                    } else {
+                        posLabelHtml = ` <span class="pos-tag">глагол</span>`;
+                    }
+                } else if (data.normPos && data.normPos !== '-') {
+                    posLabelHtml = ` <span class="pos-tag">${data.normPos}</span>`;
+                }
+                
+                const noteHtml = data.note ? ` <span style="color: var(--text-secondary); font-size: 0.85rem;">${data.note}</span>` : '';
+                row.innerHTML = `<td><strong>${data.display}</strong>${posLabelHtml}${noteHtml}</td><td>${data.count.toLocaleString()}</td><td>${percentage}%</td>`;
+                tbody.appendChild(row);
+            });
+        }
+        container.appendChild(table); statsView.appendChild(container);
     }
     function getContext(matchIdx) {
         const match = corpus[matchIdx]; let left = [], right = [];
         for (let i = 1; i <= 3; i++) { const p = matchIdx - i; if (p >= 0 && corpus[p].song === match.song) left.unshift(corpus[p].word); }
-        for (let i = 1; i <= 3; i++) { const n = matchIdx + i; if (n < corpus.length && corpus[n].song === match.song) right.push(corpus[n].word); }
+        for (let i = 1; i <= 4; i++) { const n = matchIdx + i; if (n < corpus.length && corpus[n].song === match.song) right.push(corpus[n].word); }
         return { left, right, matchWord: match.word };
     }
     function openPlayer(songName, albumName) {
