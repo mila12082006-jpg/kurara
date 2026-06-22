@@ -93,6 +93,7 @@
         .stats-table tr:hover { background: #f9fafb; }
         .stats-summary { margin-bottom: 20px; padding: 16px; background: var(--accent-mint-light); border-radius: 8px; font-weight: 600; color: var(--text-primary); }
         .pos-tag { display: inline-block; background: #e0f2fe; color: #075985; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600; }
+        .taxon-tag { display: inline-block; background: #fef3c7; color: #92400e; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; margin-left: 4px; font-weight: 600; }
         @media (max-width: 700px) { 
             .site-header { padding: 60px 15px 20px; }
             .home-btn-mobile { position: absolute; top: 15px; left: 15px; z-index: 10; }
@@ -170,6 +171,22 @@
         return p || '-';
     }
     
+    // Таксономические поля, по которым группируются словоформы внутри леммы
+    const TAXON_FIELDS = ['properNounTaxon', 'taxonNoun', 'toolSubtopic', 'taxonAdj'];
+    
+    // Нормализация таксономического значения: пустые/отсутствующие -> ''
+    function normalizeTaxon(val) {
+        if (!val) return '';
+        const v = val.trim();
+        if (v === '' || v === '-') return '';
+        return v;
+    }
+    
+    // Построение ключа таксономии для группировки
+    function buildTaxonKey(r) {
+        return TAXON_FIELDS.map(f => normalizeTaxon(r[f])).join('|||');
+    }
+    
     const grammarColumns = [
         { index: 4, label: "Часть речи" }, { index: 5, label: "Род" }, { index: 6, label: "Число" },
         { index: 7, label: "Падеж" }, { index: 8, label: "Время" }, { index: 9, label: "Лицо" },
@@ -179,7 +196,7 @@
     const semanticColumns = [
         { index: 17, label: "Таксономия имён собственных", field: 'properNounTaxon', subtopic: null },
         { index: 18, label: "Таксономия предметных имён", field: 'taxonNoun', subtopic: { index: 19, label: "Подтема инструментов", field: 'toolSubtopic' } },
-        { index: 20, label: "Таксономия прилагательных (физические свойства)", field: 'taxonAdj', subtopic: null }
+        { index: 20, label: "Таксономия прилагательных", field: 'taxonAdj', subtopic: null }
     ];
     const albumOrder = ["Здравствуйте, дети!, 2004", "Курара, 2006", "Механизмы, 2008", "Грясь, 2010", "Шикарная жизнь, 2012", "Архимед, 2014", "Пуля, 2016", "Кафка, 2019", "Брут, 2021", "ПП, 2023", "Эстеты, 2025"];
     const caseOrder = ["именительный", "родительный", "родительный (2)", "дательный", "винительный", "творительный", "предложный", "предложный (2)", "звательный"];
@@ -245,7 +262,7 @@
     function populateAlbumCheckboxes() {
         const grid = document.getElementById('albumGrid'); grid.innerHTML = '';
         const albumGroup = document.createElement('div'); albumGroup.className = 'album-group';
-        const h4 = document.createElement('h4'); h4.textContent = 'Выберите альбом(ы)'; albumGroup.appendChild(h4);
+        const h4 = document.createElement('h4'); h4.textContent = 'Выберите альбомы'; albumGroup.appendChild(h4);
         Array.from(albumsList).sort((a, b) => { const iA = albumOrder.indexOf(a), iB = albumOrder.indexOf(b); return (iA === -1 ? 999 : iA) - (iB === -1 ? 999 : iB); }).forEach(album => {
             const label = document.createElement('label'); label.className = 'checkbox-label';
             label.innerHTML = `<input type="checkbox" class="album-checkbox" value="${album}"> ${album}`;
@@ -444,19 +461,28 @@
         const container = document.createElement('div');
         container.className = 'stats-container'; container.style.display = 'block';
         
-        // Группировка по паре (лемма + нормализованная ЧР)
-        // Для глагольных форм (VERB, INFN, PRTF, PRTS, GRND) все они объединяются в одну группу VERB_GROUP
-        const lemmaPosMap = new Map();
-        function addEntry(lemmaDisplay, lemmaLower, pos, note) {
+        // Группировка по тройному ключу: (лемма + нормализованная ЧР + таксономия)
+        // Для глагольных форм (VERB, INFN, PRTF, PRTS, GRND) ЧР нормализуется в VERB_GROUP
+        // Таксономические поля сравниваются как есть, пустые значения считаются одинаковыми
+        const lemmaKeyMap = new Map();
+        function addEntry(lemmaDisplay, lemmaLower, pos, r) {
             const normPos = normalizePos(pos);
-            const key = `${lemmaLower}|||${normPos}`;
-            if (!lemmaPosMap.has(key)) {
-                lemmaPosMap.set(key, { 
+            const taxonKey = buildTaxonKey(r);
+            const key = `${lemmaLower}|||${normPos}|||${taxonKey}`;
+            if (!lemmaKeyMap.has(key)) {
+                lemmaKeyMap.set(key, { 
                     display: lemmaDisplay, 
                     lemmaLower: lemmaLower, 
                     normPos: normPos, 
-                    actualPosSet: new Set(), // фактические ЧР, встречающиеся для этой группы
-                    note: note, 
+                    taxonKey: taxonKey,
+                    actualPosSet: new Set(),
+                    taxonValues: {
+                        properNounTaxon: normalizeTaxon(r.properNounTaxon),
+                        taxonNoun: normalizeTaxon(r.taxonNoun),
+                        toolSubtopic: normalizeTaxon(r.toolSubtopic),
+                        taxonAdj: normalizeTaxon(r.taxonAdj)
+                    },
+                    note: '', 
                     count: 0 
                 });
             }
@@ -464,42 +490,49 @@
         
         if (f_lemma) {
             const matchIdx = indices.find(i => corpus[i].lemma.toLowerCase() === f_lemma);
-            if (matchIdx !== undefined) addEntry(corpus[matchIdx].lemma, f_lemma, corpus[matchIdx].pos, '');
+            if (matchIdx !== undefined) addEntry(corpus[matchIdx].lemma, f_lemma, corpus[matchIdx].pos, corpus[matchIdx]);
         }
         if (f_word) {
             const found = corpus.find(r => r.word.toLowerCase() === f_word);
-            if (found && found.lemma) addEntry(found.lemma, found.lemma.toLowerCase(), found.pos, `(словоформа: ${f_word})`);
+            if (found && found.lemma) {
+                const entry = addEntry(found.lemma, found.lemma.toLowerCase(), found.pos, found);
+                const normPos = normalizePos(found.pos);
+                const taxonKey = buildTaxonKey(found);
+                const key = `${found.lemma.toLowerCase()}|||${normPos}|||${taxonKey}`;
+                const data = lemmaKeyMap.get(key);
+                if (data) data.note = `(словоформа: ${f_word})`;
+            }
         }
         if (!f_lemma && !f_word) {
-            indices.forEach(idx => { const r = corpus[idx]; if (r.lemma) addEntry(r.lemma, r.lemma.toLowerCase(), r.pos, ''); });
+            indices.forEach(idx => { const r = corpus[idx]; if (r.lemma) addEntry(r.lemma, r.lemma.toLowerCase(), r.pos, r); });
         }
         
-        // Подсчёт словоупотреблений: для каждой группы (лемма + нормализованная ЧР)
-        // считаем все словоформы, у которых лемма совпадает и ЧР нормализуется в ту же группу
-        lemmaPosMap.forEach(data => {
+        // Подсчёт словоупотреблений: для каждой группы считаем все словоформы,
+        // у которых совпадают лемма, нормализованная ЧР и таксономические признаки
+        lemmaKeyMap.forEach(data => {
             corpus.forEach(r => {
                 if (selectedAlbums.length > 0 && !selectedAlbums.includes(r.album)) return;
                 if (r.lemma.toLowerCase() !== data.lemmaLower) return;
                 if (normalizePos(r.pos) !== data.normPos) return;
+                if (buildTaxonKey(r) !== data.taxonKey) return;
                 data.count++;
-                // Собираем фактические ЧР для отображения
                 if (r.pos && r.pos !== '-') data.actualPosSet.add(r.pos);
             });
         });
         
-        const sortedEntries = Array.from(lemmaPosMap.values()).sort((a, b) => b.count - a.count);
+        const sortedEntries = Array.from(lemmaKeyMap.values()).sort((a, b) => b.count - a.count);
         const uniqueLemmasCount = sortedEntries.length;
         
         const summary = document.createElement('div'); summary.className = 'stats-summary';
         summary.innerHTML = `
             <div>Всего словоформ в корпусе${selectedAlbums.length > 0 ? ' (по выбранным альбомам)' : ''}: <strong>${totalWords.toLocaleString()}</strong></div>
             <div>Найдено совпадений (словоформ): <strong>${indices.length.toLocaleString()}</strong></div>
-            <div>Количество уникальных лемм: <strong>${uniqueLemmasCount.toLocaleString()}</strong></div>
+            <div>Количество уникальных лемм (с учётом ЧР и таксономии): <strong>${uniqueLemmasCount.toLocaleString()}</strong></div>
         `;
         container.appendChild(summary);
         
         const table = document.createElement('table'); table.className = 'stats-table';
-        table.innerHTML = `<thead><tr><th>Лемма</th><th>Вхождения</th><th>% от корпуса</th></tr></thead><tbody></tbody>`;
+        table.innerHTML = `<thead><tr><th>Лемма</th><th>Количество словоупотреблений</th><th>% от корпуса</th></tr></thead><tbody></tbody>`;
         const tbody = table.querySelector('tbody');
         
         if (sortedEntries.length === 0) {
@@ -509,12 +542,12 @@
                 const percentage = totalWords > 0 ? ((data.count / totalWords) * 100).toFixed(4) : 0;
                 const row = document.createElement('tr');
                 
-                // Формируем метку ЧР: для глагольной группы показываем все фактические ЧР
+                // Метка ЧР
                 let posLabelHtml = '';
                 if (data.normPos === 'VERB_GROUP') {
                     const actualPos = Array.from(data.actualPosSet).sort();
                     if (actualPos.length > 0) {
-                        posLabelHtml = ` <span class="pos-tag" title="Глагольная группа: все формы VERB, INFN, PRTF, PRTS, GRND объединены">глагол: ${actualPos.join(', ')}</span>`;
+                        posLabelHtml = ` <span class="pos-tag" title="Глагольная группа: VERB, INFN, PRTF, PRTS, GRND объединены">глагол: ${actualPos.join(', ')}</span>`;
                     } else {
                         posLabelHtml = ` <span class="pos-tag">глагол</span>`;
                     }
@@ -522,8 +555,22 @@
                     posLabelHtml = ` <span class="pos-tag">${data.normPos}</span>`;
                 }
                 
+                // Метки таксономии (только непустые)
+                let taxonLabelHtml = '';
+                const tv = data.taxonValues;
+                const taxonParts = [];
+                if (tv.properNounTaxon) taxonParts.push(`им.соб.: ${tv.properNounTaxon}`);
+                if (tv.taxonNoun) taxonParts.push(`предм.им.: ${tv.taxonNoun}`);
+                if (tv.toolSubtopic) taxonParts.push(`инстр.: ${tv.toolSubtopic}`);
+                if (tv.taxonAdj) taxonParts.push(`прил.: ${tv.taxonAdj}`);
+                if (taxonParts.length > 0) {
+                    taxonLabelHtml = ` <span class="taxon-tag" title="${taxonParts.join('; ')}">📚 ${taxonParts.join('; ')}</span>`;
+                } else {
+                    taxonLabelHtml = ` <span class="taxon-tag" style="background:#f1f5f9; color:#64748b;" title="Таксономические признаки не указаны">📚 без таксономии</span>`;
+                }
+                
                 const noteHtml = data.note ? ` <span style="color: var(--text-secondary); font-size: 0.85rem;">${data.note}</span>` : '';
-                row.innerHTML = `<td><strong>${data.display}</strong>${posLabelHtml}${noteHtml}</td><td>${data.count.toLocaleString()}</td><td>${percentage}%</td>`;
+                row.innerHTML = `<td><strong>${data.display}</strong>${posLabelHtml}${taxonLabelHtml}${noteHtml}</td><td>${data.count.toLocaleString()}</td><td>${percentage}%</td>`;
                 tbody.appendChild(row);
             });
         }
